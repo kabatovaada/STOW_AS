@@ -33,45 +33,55 @@ TYPE_COLORS = {"VGP": "#2EA043", "SP": "#6366F1", "VV": "#D29922", "REP": "#FF4B
 TYPE_ORDER = ["VGP", "VV", "REP", "SP", "SKL"]
 
 # ─── Load data ───────────────────────────────────────
-@st.cache_data
-def load_data(file_bytes):
-    df = pd.read_excel(BytesIO(file_bytes), engine='openpyxl')
+def parse_excel(raw_bytes):
+    df = pd.read_excel(BytesIO(raw_bytes), engine='openpyxl')
     df['doklad_type'] = df['Doklad'].astype(str).str.extract(r'^([A-Z]+)')
     df['section'] = df['Zdroj.lokace'].astype(str).str.extract(r'^(\d+[A-Z]+)')
     df['floor'] = df['section'].astype(str).str[0]
     return df
 
+def on_file_upload():
+    """Callback – uloží byty + DataFrame do session_state hneď pri uploade."""
+    f = st.session_state.get('uploader')
+    if f is not None:
+        raw = f.getvalue()
+        st.session_state['file_bytes'] = raw
+        st.session_state['filename'] = f.name
+        st.session_state['df'] = parse_excel(raw)
+
 # ─── Sidebar ─────────────────────────────────────────
 with st.sidebar:
     st.markdown("### ⚙ Parametre")
-    uploaded = st.file_uploader("📂 Nahraj STOW AS Report (.xlsx)", type=["xlsx"])
-    
-    # Uloží surové byty do session_state → prežijú každý rerun
-    if uploaded is not None:
-        st.session_state['file_bytes'] = uploaded.getvalue()
-        st.session_state['filename'] = uploaded.name
-    
-    if 'file_bytes' not in st.session_state:
+
+    st.file_uploader(
+        "📂 Nahraj STOW AS Report (.xlsx)",
+        type=["xlsx"],
+        key="uploader",
+        on_change=on_file_upload,
+    )
+
+    # Ak df ešte nie je → zastav
+    if 'df' not in st.session_state:
         st.info("Nahraj STOW_AS_REPORT.xlsx pre analýzu")
         st.stop()
-    
-    df = load_data(st.session_state['file_bytes'])
-    
+
+    df = st.session_state['df']
+    st.success(f"✅ {st.session_state.get('filename','súbor')} · {len(df):,} JBL")
+
     # Filters
     all_types = sorted(df['doklad_type'].dropna().unique())
     sel_types = st.multiselect("Typ dokladu", all_types, default=all_types)
-    
+
     all_ops = sorted(df['Spustil'].dropna().unique())
     sel_ops = st.multiselect("Operátor (Spustil)", all_ops, default=all_ops)
-    
+
     all_floors = sorted(df['floor'].dropna().unique())
     sel_floors = st.multiselect("Poschodie", all_floors, default=all_floors)
-    
+
     st.divider()
     if st.button("🗑 Odstrániť súbor"):
-        for key in ['file_bytes', 'filename']:
-            st.session_state.pop(key, None)
-        st.cache_data.clear()
+        for k in ['file_bytes', 'filename', 'df']:
+            st.session_state.pop(k, None)
         st.rerun()
 
 # ─── Apply filters ───────────────────────────────────
