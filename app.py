@@ -32,41 +32,60 @@ st.markdown("""
 TYPE_COLORS = {"VGP": "#2EA043", "SP": "#6366F1", "VV": "#D29922", "REP": "#FF4B4B", "SKL": "#3FB950"}
 TYPE_ORDER = ["VGP", "VV", "REP", "SP", "SKL"]
 
-# ─── Load data ───────────────────────────────────────
-def parse_excel(raw_bytes):
-    df = pd.read_excel(BytesIO(raw_bytes), engine='openpyxl')
+# ─── Persistence – uloží súbor na disk ───────────────
+import os, glob
+
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+os.makedirs(DATA_DIR, exist_ok=True)
+
+def get_saved_file():
+    """Nájde uložený xlsx na disku."""
+    files = glob.glob(os.path.join(DATA_DIR, "*.xlsx"))
+    return files[0] if files else None
+
+def save_file(name, raw_bytes):
+    """Uloží súbor na disk (vymaže starý)."""
+    for old in glob.glob(os.path.join(DATA_DIR, "*.xlsx")):
+        os.remove(old)
+    path = os.path.join(DATA_DIR, name)
+    with open(path, "wb") as f:
+        f.write(raw_bytes)
+    return path
+
+def delete_saved_file():
+    for old in glob.glob(os.path.join(DATA_DIR, "*.xlsx")):
+        os.remove(old)
+
+def parse_excel(path_or_bytes):
+    if isinstance(path_or_bytes, (str, os.PathLike)):
+        df = pd.read_excel(path_or_bytes, engine='openpyxl')
+    else:
+        df = pd.read_excel(BytesIO(path_or_bytes), engine='openpyxl')
     df['doklad_type'] = df['Doklad'].astype(str).str.extract(r'^([A-Z]+)')
     df['section'] = df['Zdroj.lokace'].astype(str).str.extract(r'^(\d+[A-Z]+)')
     df['floor'] = df['section'].astype(str).str[0]
     return df
 
-def on_file_upload():
-    """Callback – uloží byty + DataFrame do session_state hneď pri uploade."""
-    f = st.session_state.get('uploader')
-    if f is not None:
-        raw = f.getvalue()
-        st.session_state['file_bytes'] = raw
-        st.session_state['filename'] = f.name
-        st.session_state['df'] = parse_excel(raw)
-
 # ─── Sidebar ─────────────────────────────────────────
 with st.sidebar:
     st.markdown("### ⚙ Parametre")
 
-    st.file_uploader(
-        "📂 Nahraj STOW AS Report (.xlsx)",
-        type=["xlsx"],
-        key="uploader",
-        on_change=on_file_upload,
-    )
+    uploaded = st.file_uploader("📂 Nahraj STOW AS Report (.xlsx)", type=["xlsx"])
 
-    # Ak df ešte nie je → zastav
-    if 'df' not in st.session_state:
+    # Pri uploade uloží na disk
+    if uploaded is not None:
+        raw = uploaded.getvalue()
+        save_file(uploaded.name, raw)
+
+    # Načítaj z disku (prežije refresh aj sleep)
+    saved = get_saved_file()
+    if saved is None:
         st.info("Nahraj STOW_AS_REPORT.xlsx pre analýzu")
         st.stop()
 
-    df = st.session_state['df']
-    st.success(f"✅ {st.session_state.get('filename','súbor')} · {len(df):,} JBL")
+    df = parse_excel(saved)
+    fname = os.path.basename(saved)
+    st.success(f"✅ {fname} · {len(df):,} JBL")
 
     # Filters
     all_types = sorted(df['doklad_type'].dropna().unique())
@@ -80,8 +99,7 @@ with st.sidebar:
 
     st.divider()
     if st.button("🗑 Odstrániť súbor"):
-        for k in ['file_bytes', 'filename', 'df']:
-            st.session_state.pop(k, None)
+        delete_saved_file()
         st.rerun()
 
 # ─── Apply filters ───────────────────────────────────
