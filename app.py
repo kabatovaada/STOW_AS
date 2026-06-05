@@ -4,6 +4,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import numpy as np
+from io import BytesIO
 
 st.set_page_config(page_title="STOW AS Report", page_icon="📦", layout="wide")
 
@@ -33,8 +34,8 @@ TYPE_ORDER = ["VGP", "VV", "REP", "SP", "SKL"]
 
 # ─── Load data ───────────────────────────────────────
 @st.cache_data
-def load_data(file):
-    df = pd.read_excel(file, engine='openpyxl')
+def load_data(file_bytes):
+    df = pd.read_excel(BytesIO(file_bytes), engine='openpyxl')
     df['doklad_type'] = df['Doklad'].astype(str).str.extract(r'^([A-Z]+)')
     df['section'] = df['Zdroj.lokace'].astype(str).str.extract(r'^(\d+[A-Z]+)')
     df['floor'] = df['section'].astype(str).str[0]
@@ -45,15 +46,16 @@ with st.sidebar:
     st.markdown("### ⚙ Parametre")
     uploaded = st.file_uploader("📂 Nahraj STOW AS Report (.xlsx)", type=["xlsx"])
     
-    if uploaded:
-        st.session_state['df'] = load_data(uploaded)
+    # Uloží surové byty do session_state → prežijú každý rerun
+    if uploaded is not None:
+        st.session_state['file_bytes'] = uploaded.getvalue()
         st.session_state['filename'] = uploaded.name
     
-    if 'df' not in st.session_state:
+    if 'file_bytes' not in st.session_state:
         st.info("Nahraj STOW_AS_REPORT.xlsx pre analýzu")
         st.stop()
     
-    df = st.session_state['df']
+    df = load_data(st.session_state['file_bytes'])
     
     # Filters
     all_types = sorted(df['doklad_type'].dropna().unique())
@@ -65,9 +67,11 @@ with st.sidebar:
     all_floors = sorted(df['floor'].dropna().unique())
     sel_floors = st.multiselect("Poschodie", all_floors, default=all_floors)
     
+    st.divider()
     if st.button("🗑 Odstrániť súbor"):
-        del st.session_state['df']
-        del st.session_state['filename']
+        for key in ['file_bytes', 'filename']:
+            st.session_state.pop(key, None)
+        st.cache_data.clear()
         st.rerun()
 
 # ─── Apply filters ───────────────────────────────────
