@@ -46,10 +46,14 @@ with st.sidebar:
     uploaded = st.file_uploader("📂 Nahraj STOW AS Report (.xlsx)", type=["xlsx"])
     
     if uploaded:
-        df = load_data(uploaded)
-    else:
+        st.session_state['df'] = load_data(uploaded)
+        st.session_state['filename'] = uploaded.name
+    
+    if 'df' not in st.session_state:
         st.info("Nahraj STOW_AS_REPORT.xlsx pre analýzu")
         st.stop()
+    
+    df = st.session_state['df']
     
     # Filters
     all_types = sorted(df['doklad_type'].dropna().unique())
@@ -60,6 +64,11 @@ with st.sidebar:
     
     all_floors = sorted(df['floor'].dropna().unique())
     sel_floors = st.multiselect("Poschodie", all_floors, default=all_floors)
+    
+    if st.button("🗑 Odstrániť súbor"):
+        del st.session_state['df']
+        del st.session_state['filename']
+        st.rerun()
 
 # ─── Apply filters ───────────────────────────────────
 mask = (
@@ -73,7 +82,8 @@ fdf = df[mask].copy()
 # HEADER
 # ═══════════════════════════════════════════════════════
 st.markdown("# 📦 STOW AS Report")
-st.markdown(f'<div class="info-bar">📂 Načítaný súbor: <b>{uploaded.name}</b> · {len(df):,} JBL celkovo · Filter: {len(fdf):,} JBL</div>', unsafe_allow_html=True)
+fname = st.session_state.get('filename', 'súbor')
+st.markdown(f'<div class="info-bar">📂 Načítaný súbor: <b>{fname}</b> · {len(df):,} JBL celkovo · Filter: {len(fdf):,} JBL</div>', unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════
 # HERO CARD + KPIs
