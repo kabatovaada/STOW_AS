@@ -32,19 +32,17 @@ st.markdown("""
 TYPE_COLORS = {"VGP": "#2EA043", "SP": "#6366F1", "VV": "#D29922", "REP": "#FF4B4B", "SKL": "#3FB950"}
 TYPE_ORDER = ["VGP", "VV", "REP", "SP", "SKL"]
 
-# ─── Persistence – uloží súbor na disk ───────────────
-import os, glob
+# ─── Persistence – uloží na disk + commitne do GitHub ─
+import os, glob, base64, requests
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 def get_saved_file():
-    """Nájde uložený xlsx na disku."""
     files = glob.glob(os.path.join(DATA_DIR, "*.xlsx"))
     return files[0] if files else None
 
 def save_file(name, raw_bytes):
-    """Uloží súbor na disk (vymaže starý)."""
     for old in glob.glob(os.path.join(DATA_DIR, "*.xlsx")):
         os.remove(old)
     path = os.path.join(DATA_DIR, name)
@@ -56,14 +54,65 @@ def delete_saved_file():
     for old in glob.glob(os.path.join(DATA_DIR, "*.xlsx")):
         os.remove(old)
 
+def commit_to_github(filename, raw_bytes):
+    """Commitne súbor do GitHub repa → prežije redeploy."""
+    try:
+        token = st.secrets["GITHUB_TOKEN"]
+        repo  = st.secrets["GITHUB_REPO"]   # napr. "user/stow_as"
+    except Exception:
+        return False, "GITHUB_TOKEN alebo GITHUB_REPO chýba v secrets"
+
+    api = f"https://api.github.com/repos/{repo}/contents/data/{filename}"
+    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github+json"}
+
+    # Zisti sha ak súbor už existuje (pre update)
+    sha = None
+    r = requests.get(api, headers=headers)
+    if r.status_code == 200:
+        sha = r.json().get("sha")
+
+    payload = {
+        "message": f"update {filename}",
+        "content": base64.b64encode(raw_bytes).decode("utf-8"),
+    }
+    if sha:
+        payload["sha"] = sha
+
+    r = requests.put(api, headers=headers, json=payload)
+    if r.status_code in (200, 201):
+        return True, "Commitnuté do GitHub"
+    else:
+        return False, f"GitHub API chyba: {r.status_code}"
+
 def parse_excel(path_or_bytes):
     if isinstance(path_or_bytes, (str, os.PathLike)):
         df = pd.read_excel(path_or_bytes, engine='openpyxl')
     else:
         df = pd.read_excel(BytesIO(path_or_bytes), engine='openpyxl')
     df['doklad_type'] = df['Doklad'].astype(str).str.extract(r'^([A-Z]+)')
-    df['section'] = df['Zdroj.lokace'].astype(str).str.extract(r'^(\d+[A-Z]+)')
-    df['floor'] = df['section'].astype(str).str[0]
+
+    # Operátor
+    df['_op'] = df['Spustil'] if 'Spustil' in df.columns else df.get('Potvrzovač', 'N/A')
+
+    # Sekcia / poschodie
+    if 'Zdroj.lokace' in df.columns:
+        df['section'] = df['Zdroj.lokace'].astype(str).str.extract(r'^(\d+[A-Z]+)')
+        df['floor'] = df['section'].astype(str).str[0]
+    elif 'Stanice lokace' in df.columns:
+        df['section'] = df['Stanice lokace'].astype(str)
+        df['floor'] = df['section'].str.extract(r'^([A-Z]+)')
+    else:
+        df['section'] = 'N/A'
+        df['floor'] = 'N/A'
+
+    # Dátum
+    for col in ['Konec Zpracování na Pob', 'Datum vytvoření', 'Čas vzniku']:
+        if col in df.columns:
+            df['_date'] = pd.to_datetime(df[col], errors='coerce')
+            break
+    else:
+        df['_date'] = pd.NaT
+
     return df
 
 # ─── Sidebar ─────────────────────────────────────────
@@ -72,12 +121,15 @@ with st.sidebar:
 
     uploaded = st.file_uploader("📂 Nahraj STOW AS Report (.xlsx)", type=["xlsx"])
 
-    # Pri uploade uloží na disk
     if uploaded is not None:
         raw = uploaded.getvalue()
         save_file(uploaded.name, raw)
+        ok, msg = commit_to_github(uploaded.name, raw)
+        if ok:
+            st.success(f"✅ Uložené + {msg}")
+        else:
+            st.warning(f"💾 Uložené lokálne · ⚠ {msg}")
 
-    # Načítaj z disku (prežije refresh aj sleep)
     saved = get_saved_file()
     if saved is None:
         st.info("Nahraj STOW_AS_REPORT.xlsx pre analýzu")
@@ -87,12 +139,11 @@ with st.sidebar:
     fname = os.path.basename(saved)
     st.success(f"✅ {fname} · {len(df):,} JBL")
 
-    # Filters
     all_types = sorted(df['doklad_type'].dropna().unique())
     sel_types = st.multiselect("Typ dokladu", all_types, default=all_types)
 
-    all_ops = sorted(df['Spustil'].dropna().unique())
-    sel_ops = st.multiselect("Operátor (Spustil)", all_ops, default=all_ops)
+    all_ops = sorted(df['_op'].dropna().unique())
+    sel_ops = st.multiselect("Operátor", all_ops, default=all_ops)
 
     all_floors = sorted(df['floor'].dropna().unique())
     sel_floors = st.multiselect("Poschodie", all_floors, default=all_floors)
@@ -105,7 +156,7 @@ with st.sidebar:
 # ─── Apply filters ───────────────────────────────────
 mask = (
     df['doklad_type'].isin(sel_types) &
-    df['Spustil'].isin(sel_ops) &
+    df['_op'].isin(sel_ops) &
     df['floor'].isin(sel_floors)
 )
 fdf = df[mask].copy()
@@ -114,8 +165,10 @@ fdf = df[mask].copy()
 # HEADER
 # ═══════════════════════════════════════════════════════
 st.markdown("# 📦 STOW AS Report")
-fname = st.session_state.get('filename', 'súbor')
-st.markdown(f'<div class="info-bar">📂 Načítaný súbor: <b>{fname}</b> · {len(df):,} JBL celkovo · Filter: {len(fdf):,} JBL</div>', unsafe_allow_html=True)
+date_min = fdf['_date'].min()
+date_max = fdf['_date'].max()
+obdobie = f" · Obdobie: <b>{date_min.strftime('%d.%m.%Y')}</b> – <b>{date_max.strftime('%d.%m.%Y')}</b>" if pd.notna(date_min) and pd.notna(date_max) else ""
+st.markdown(f'<div class="info-bar">📂 <b>{fname}</b> · {len(df):,} JBL · Filter: {len(fdf):,} JBL{obdobie}</div>', unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════
 # HERO CARD + KPIs
@@ -137,7 +190,7 @@ with c2:
     m1, m2, m3 = st.columns(3)
     m1.metric("Unikátne doklady", f"{fdf['Doklad'].nunique():,}")
     m2.metric("Unikátne produkty", f"{fdf['Produkt'].nunique():,}")
-    m3.metric("Operátori", f"{fdf['Spustil'].nunique()}")
+    m3.metric("Operátori", f"{fdf['_op'].nunique()}")
     
     m4, m5, m6 = st.columns(3)
     m4.metric("Priemer ks/JBL", f"{fdf['Množství'].mean():.1f}")
@@ -195,7 +248,7 @@ for i, t in enumerate(TYPE_ORDER):
                 <div style="display:flex; justify-content:space-between;"><span style="color:#8B949E; font-size:0.7rem;">Doklady</span><span style="color:#C9D1D9; font-weight:700;">{grp['Doklad'].nunique():,}</span></div>
                 <div style="display:flex; justify-content:space-between;"><span style="color:#8B949E; font-size:0.7rem;">Množstvo</span><span style="color:#C9D1D9; font-weight:700;">{int(grp['Množství'].sum()):,}</span></div>
                 <div style="display:flex; justify-content:space-between;"><span style="color:#8B949E; font-size:0.7rem;">Produkty</span><span style="color:#C9D1D9; font-weight:700;">{grp['Produkt'].nunique():,}</span></div>
-                <div style="display:flex; justify-content:space-between;"><span style="color:#8B949E; font-size:0.7rem;">Operátori</span><span style="color:#C9D1D9; font-weight:700;">{grp['Spustil'].nunique()}</span></div>
+                <div style="display:flex; justify-content:space-between;"><span style="color:#8B949E; font-size:0.7rem;">Operátori</span><span style="color:#C9D1D9; font-weight:700;">{grp['_op'].nunique()}</span></div>
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -205,7 +258,7 @@ for i, t in enumerate(TYPE_ORDER):
 # ═══════════════════════════════════════════════════════
 st.markdown('<div class="section-title">OPERÁTORI – TOP 15</div>', unsafe_allow_html=True)
 
-top_ops = fdf.groupby('Spustil').agg(
+top_ops = fdf.groupby('_op').agg(
     jbl=('Doklad', 'count'),
     qty=('Množství', 'sum'),
     dok=('Doklad', 'nunique'),
@@ -214,9 +267,9 @@ top_ops = fdf.groupby('Spustil').agg(
 top_ops['ratio'] = (top_ops['qty'] / top_ops['jbl']).round(1)
 
 # Dominant type per operator
-dom_type = fdf.groupby(['Spustil', 'doklad_type']).size().reset_index(name='cnt')
-dom_type = dom_type.loc[dom_type.groupby('Spustil')['cnt'].idxmax()][['Spustil', 'doklad_type', 'cnt']]
-top_ops = top_ops.merge(dom_type, on='Spustil', how='left')
+dom_type = fdf.groupby(['_op', 'doklad_type']).size().reset_index(name='cnt')
+dom_type = dom_type.loc[dom_type.groupby('_op')['cnt'].idxmax()][['_op', 'doklad_type', 'cnt']]
+top_ops = top_ops.merge(dom_type, on='_op', how='left')
 
 c1, c2 = st.columns([6, 4])
 
@@ -224,7 +277,7 @@ with c1:
     fig_ops = go.Figure()
     top_ops_rev = top_ops.iloc[::-1]
     fig_ops.add_trace(go.Bar(
-        x=top_ops_rev['jbl'], y=top_ops_rev['Spustil'].str.split(' ').str[0],
+        x=top_ops_rev['jbl'], y=top_ops_rev['_op'].str.split(' ').str[0],
         orientation='h', marker_color='#2EA043',
         text=top_ops_rev['jbl'].apply(lambda x: f"{x:,}"),
         textposition='outside', textfont=dict(color='#3FB950', size=11),
@@ -242,7 +295,7 @@ with c1:
 with c2:
     st.markdown("**JBL vs Množstvo – Top 5**")
     for _, row in top_ops.head(5).iterrows():
-        short = row['Spustil'].split(' ')[0]
+        short = row['_op'].split(' ')[0]
         st.markdown(f"""
         <div style="background:#161B22; border:1px solid #30363D; border-radius:6px; padding:8px 12px; margin-bottom:6px;">
             <div style="display:flex; justify-content:space-between;">
@@ -258,7 +311,7 @@ with c2:
     
     st.markdown("**Dominantný typ dokladu**")
     for _, row in top_ops.head(10).iterrows():
-        short = row['Spustil'].split(' ')[0]
+        short = row['_op'].split(' ')[0]
         dt = row['doklad_type']
         dc = TYPE_COLORS.get(dt, '#666')
         st.markdown(f"""
