@@ -165,9 +165,12 @@ fdf = df[mask].copy()
 # HEADER
 # ═══════════════════════════════════════════════════════
 st.markdown("# 📦 STOW AS Report")
-date_min = fdf['_date'].min()
-date_max = fdf['_date'].max()
-obdobie = f" · Obdobie: <b>{date_min.strftime('%d.%m.%Y')}</b> – <b>{date_max.strftime('%d.%m.%Y')}</b>" if pd.notna(date_min) and pd.notna(date_max) else ""
+try:
+    date_min = fdf['_date'].dropna().min()
+    date_max = fdf['_date'].dropna().max()
+    obdobie = f" · Obdobie: <b>{date_min.strftime('%d.%m.%Y')}</b> – <b>{date_max.strftime('%d.%m.%Y')}</b>"
+except Exception:
+    obdobie = ""
 st.markdown(f'<div class="info-bar">📂 <b>{fname}</b> · {len(df):,} JBL · Filter: {len(fdf):,} JBL{obdobie}</div>', unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════
