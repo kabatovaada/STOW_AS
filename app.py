@@ -105,13 +105,24 @@ def parse_excel(path_or_bytes):
         df['section'] = 'N/A'
         df['floor'] = 'N/A'
 
-    # Dátum
-    for col in ['Konec Zpracování na Pob', 'Datum vytvoření', 'Čas vzniku']:
-        if col in df.columns:
-            df['_date'] = pd.to_datetime(df[col], errors='coerce')
+    # Dátum — nájdi datetime stĺpec (preskočí čísla)
+    df['_date'] = pd.NaT
+    for col in df.columns:
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            df['_date'] = df[col]
             break
     else:
-        df['_date'] = pd.NaT
+        for col in df.columns:
+            if pd.api.types.is_numeric_dtype(df[col]):
+                continue
+            try:
+                parsed = pd.to_datetime(df[col], errors='coerce')
+                valid = parsed.dropna()
+                if len(valid) > len(df) * 0.5 and valid.min().year >= 2020:
+                    df['_date'] = parsed
+                    break
+            except Exception:
+                continue
 
     return df
 
